@@ -1,12 +1,6 @@
 # scripts/run_migrations.ps1
-# Runs db migrations in order and tracks them in schema_migrations.
-# Usage (PowerShell): .\scripts\run_migrations.ps1
-# If execution policy blocks it:
-# powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\run_migrations.ps1
-
 $ErrorActionPreference = "Stop"
 
-# Must be run from repo root (where docker-compose.yml lives)
 if (!(Test-Path "docker-compose.yml")) {
     throw "Run this from the repo root (the folder containing docker-compose.yml)."
 }
@@ -14,23 +8,28 @@ if (!(Test-Path "docker-compose.yml")) {
 $dbUser = "app"
 $dbName = "tenorclone"
 
-# Ensure DB container is up
 Write-Host "Starting database container (docker compose up -d)..."
 docker compose up -d | Out-Host
 
-# Get container ID for the 'db' service (portable, no hardcoded name)
 $containerIdRaw = docker compose ps -q db
 if (-not $containerIdRaw) {
-    throw "No running container found for service 'db'. Run: docker compose up -d"
+    throw "No container found for service 'db'. Check docker-compose.yml service name and run: docker compose ps"
 }
 $containerId = $containerIdRaw.Trim()
-if ([string]::IsNullOrWhiteSpace($containerId)) {
-    throw "Could not find a running container for service 'db'. Try: docker compose up -d, then docker compose ps"
-}
-
 Write-Host "Using db container: $containerId"
 
-# Ensure schema_migrations exists (safe on fresh DBs)
+# Wait for Postgres to be ready (prevents null outputs early on)
+Write-Host "Waiting for Postgres to be ready..."
+for ($i = 1; $i -le 30; $i++) {
+    $ready = docker exec $containerId pg_isready -U $dbUser -d $dbName 2>$null
+    if ($LASTEXITCODE -eq 0) { break }
+    Start-Sleep -Seconds 1
+}
+if ($LASTEXITCODE -ne 0) {
+    throw "Postgres not ready after waiting. Run: docker logs $(docker compose ps -q db)"
+}
+
+# Ensure schema_migrations exists
 $ensureTableSql = @"
 CREATE TABLE IF NOT EXISTS schema_migrations (
   version text PRIMARY KEY,
@@ -39,31 +38,43 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 "@
 
 Write-Host "Ensuring schema_migrations table exists..."
-$ensureTableSql | docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 | Out-Host
+$ensureOut = $ensureTableSql | docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 2>&1
+if ($LASTEXITCODE -ne 0) { throw "psql failed creating schema_migrations:`n$ensureOut" }
+$ensureOut | Out-Host
 
-# Get migrations in sorted order
 $migrationFiles = Get-ChildItem "db\migrations\*.sql" | Sort-Object Name
 
 foreach ($file in $migrationFiles) {
-    $version = $file.Name.Replace("'", "''")  # simple safety for single quotes in filenames (rare)
+    $version = $file.Name.Replace("'", "''")
 
-    # Check if already applied
+    # Check if already applied (capture stderr too)
     $checkSql = "SELECT 1 FROM schema_migrations WHERE version = '$version' LIMIT 1;"
-    $alreadyApplied = docker exec -i $containerId psql -U $dbUser -d $dbName -t -A -v ON_ERROR_STOP=1 -c $checkSql
+    $alreadyAppliedOut = docker exec -i $containerId psql -U $dbUser -d $dbName -t -A -v ON_ERROR_STOP=1 -c $checkSql 2>&1
 
-    if ($alreadyApplied.Trim() -eq "1") {
+    if ($LASTEXITCODE -ne 0) {
+        throw "psql failed checking migration '$version':`n$alreadyAppliedOut"
+    }
+
+    $alreadyApplied = ($alreadyAppliedOut | Out-String).Trim()
+
+    if ($alreadyApplied -eq "1") {
         Write-Host "Skipping $version (already applied)"
         continue
     }
 
     Write-Host "Applying $version..."
 
-    # Apply migration file (stop on error)
-    Get-Content $file.FullName | docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 | Out-Host
+    $applyOut = Get-Content $file.FullName | docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "psql failed applying migration '$version':`n$applyOut"
+    }
+    $applyOut | Out-Host
 
-    # Record it as applied
     $recordSql = "INSERT INTO schema_migrations(version) VALUES ('$version');"
-    docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 -c $recordSql | Out-Host
+    $recordOut = docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 -c $recordSql 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "psql failed recording migration '$version':`n$recordOut"
+    }
 
     Write-Host "Applied $version"
 }
