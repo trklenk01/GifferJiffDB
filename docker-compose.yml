@@ -1,6 +1,8 @@
 services:
   db:
     image: postgres:16
+    container_name: tenorclone-db
+    restart: always
     environment:
       POSTGRES_USER: app
       POSTGRES_PASSWORD: app
@@ -8,7 +10,7 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - db_data:/var/lib/postgresql/data
+      - pgdata:/var/lib/postgresql/data
 
   db_migrate:
     image: postgres:16
@@ -24,10 +26,10 @@ services:
       until pg_isready -h db -U app -d tenorclone; do sleep 1; done;
       echo 'DB ready. Applying migrations...';
 
-      # bootstrap schema_migrations first
+      # 1) bootstrap tracking table
       psql -h db -U app -d tenorclone -v ON_ERROR_STOP=1 -f /migrations/000_migrations.sql;
 
-      # apply the rest in order
+      # 2) run the rest in filename order
       for f in /migrations/*.sql; do
         [ \"$(basename $f)\" = \"000_migrations.sql\" ] && continue;
         echo \"Running $f\";
@@ -36,3 +38,6 @@ services:
 
       echo 'Migrations complete.'
       "
+
+volumes:
+  pgdata:
