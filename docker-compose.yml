@@ -19,25 +19,39 @@ services:
     environment:
       PGPASSWORD: app
     volumes:
+      # choose ONE of these depending on where your sql files are:
       - ./db/migrations:/migrations:ro
+      # - ./db:/migrations:ro
     entrypoint: ["/bin/bash", "-lc"]
     command: >
-      "
+      set -euo pipefail;
       until pg_isready -h db -U app -d tenorclone; do sleep 1; done;
-      echo 'DB ready. Applying migrations...';
 
-      # 1) bootstrap tracking table
+      echo 'DB ready. Contents of /migrations:';
+      ls -la /migrations;
+
+      shopt -s nullglob;
+      files=(/migrations/*.sql);
+
+      if [ "$${#files[@]}" -eq 0 ]; then
+        echo 'ERROR: No .sql files found in /migrations. Fix the compose volume mount path.' >&2;
+        exit 1;
+      fi;
+
+      echo 'Bootstrapping schema_migrations (000_migrations.sql)...';
       psql -h db -U app -d tenorclone -v ON_ERROR_STOP=1 -f /migrations/000_migrations.sql;
 
-      # 2) run the rest in filename order
-      for f in /migrations/*.sql; do
-        [ \"$(basename $f)\" = \"000_migrations.sql\" ] && continue;
-        echo \"Running $f\";
-        psql -h db -U app -d tenorclone -v ON_ERROR_STOP=1 -f \"$f\";
+      echo 'Applying remaining migrations...';
+      for f in "$${files[@]}"; do
+        base="$$(basename "$$f")";
+        if [ "$$base" = "000_migrations.sql" ]; then
+          continue;
+        fi;
+        echo "Running $$f";
+        psql -h db -U app -d tenorclone -v ON_ERROR_STOP=1 -f "$$f";
       done;
 
       echo 'Migrations complete.'
-      "
 
 volumes:
   pgdata:
