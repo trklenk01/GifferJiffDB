@@ -29,20 +29,10 @@ if ($LASTEXITCODE -ne 0) {
     throw "Postgres not ready after waiting. Run: docker logs $(docker compose ps -q db)"
 }
 
-# Ensure schema_migrations exists
-$ensureTableSql = @"
-CREATE TABLE IF NOT EXISTS schema_migrations (
-  version text PRIMARY KEY,
-  applied_at timestamptz NOT NULL DEFAULT now()
-);
-"@
+$migrationFiles = Get-ChildItem "db\migrations\*.sql" |
+  Where-Object { $_.Name -ne "000_migrations.sql" } |
+  Sort-Object Name
 
-Write-Host "Ensuring schema_migrations table exists..."
-$ensureOut = $ensureTableSql | docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 2>&1
-if ($LASTEXITCODE -ne 0) { throw "psql failed creating schema_migrations:`n$ensureOut" }
-$ensureOut | Out-Host
-
-$migrationFiles = Get-ChildItem "db\migrations\*.sql" | Sort-Object Name
 
 foreach ($file in $migrationFiles) {
     $version = $file.Name.Replace("'", "''")
