@@ -17,9 +17,19 @@ if (-not $containerIdRaw) {
 }
 $containerId = $containerIdRaw.Trim()
 Write-Host "Using db container: $containerId"
+Write-Host "Bootstrapping schema_migrations (000_migrations.sql)..."
+$bootstrap = Get-Content "db\migrations\000_migrations.sql" |
+  docker exec -i $containerId psql -U $dbUser -d $dbName -v ON_ERROR_STOP=1 2>&1
+
+if ($LASTEXITCODE -ne 0) {
+  throw "Bootstrap failed:`n$bootstrap"
+}
+
+$bootstrap | Out-Host
 
 # Wait for Postgres to be ready (prevents null outputs early on)
 Write-Host "Waiting for Postgres to be ready..."
+
 for ($i = 1; $i -le 30; $i++) {
     $ready = docker exec $containerId pg_isready -U $dbUser -d $dbName 2>$null
     if ($LASTEXITCODE -eq 0) { break }
