@@ -19,7 +19,11 @@ Write-Host "Starting database container (docker compose up -d)..."
 docker compose up -d | Out-Host
 
 # Get container ID for the 'db' service (portable, no hardcoded name)
-$containerId = (docker compose ps -q db).Trim()
+$containerIdRaw = docker compose ps -q db
+if (-not $containerIdRaw) {
+    throw "No running container found for service 'db'. Run: docker compose up -d"
+}
+$containerId = $containerIdRaw.Trim()
 if ([string]::IsNullOrWhiteSpace($containerId)) {
     throw "Could not find a running container for service 'db'. Try: docker compose up -d, then docker compose ps"
 }
